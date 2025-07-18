@@ -10,6 +10,7 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 // Interface for a standard DEX Router like Uniswap V2
 interface IDEXRouter {
     function WETH() external pure returns (address);
+
     function addLiquidityETH(
         address token,
         uint256 amountTokenDesired,
@@ -17,56 +18,47 @@ interface IDEXRouter {
         uint256 amountETHMin,
         address to,
         uint256 deadline
-    ) external payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
 }
 
 /**
  * @title BondingCurveToken
  * @dev An ERC20 token with a linear bonding curve for pricing.
- * Users can buy/sell tokens until the market cap threshold is reached,
- * triggering automatic liquidity pool creation on a DEX.
+ * This version includes robust mathematical handling to prevent overflows.
  */
 contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
     // --- State Variables ---
 
-    // DEX Router (e.g., Uniswap V2 Router address)
     IDEXRouter public immutable dexRouter;
-    
-    // The price of the first token minted (in wei)
-    uint256 public constant INITIAL_PRICE = 0.0000001 ether; 
-    
-    // Price increase per token minted (in wei)
-    uint256 public constant PRICE_INCREMENT = 0.000000001 ether; 
-
-    // Market cap threshold for DEX migration (in wei)
     uint256 public immutable marketCapThreshold;
-
-    // Address of the token creator
     address public immutable creator;
 
-    // Flag indicating if trading has moved to the DEX
-    bool public isLiveOnDex = false;
+    // Using a scaling factor for all price calculations to maintain precision.
+    uint256 private constant PRICE_PRECISION = 1e18;
 
-    // Timestamp of contract creation
+    // Prices are now scaled up to avoid floating-point math.
+    uint256 public constant INITIAL_PRICE_SCALED = 1e11; // 0.0000001 * 1e18
+    uint256 public constant PRICE_INCREMENT_SCALED = 1e9;  // 0.000000001 * 1e18
+
+    bool public isLiveOnDex = false;
     uint256 public immutable createdAt;
 
     // --- Events ---
 
-    event Bought(address indexed buyer, uint256 amountIn, uint256 tokensOut);
-    event Sold(address indexed seller, uint256 tokensIn, uint256 amountOut);
+    event Bought(address indexed buyer, uint256 ethIn, uint256 tokensOut);
+    event Sold(address indexed seller, uint256 tokensIn, uint256 ethOut);
     event MigratedToDex(address indexed tokenAddress, uint256 ethAmount, uint256 tokenAmount);
     event FundsRecovered(address indexed owner, uint256 ethAmount, uint256 tokenAmount);
 
     // --- Constructor ---
 
-    /**
-     * @dev Initializes the token with name, symbol, market cap threshold, creator, and DEX router.
-     * @param name The name of the token.
-     * @param symbol The symbol of the token.
-     * @param _marketCapThreshold The market cap threshold for DEX migration (in wei).
-     * @param _creator The address of the token creator.
-     * @param _dexRouterAddress The address of the DEX router.
-     */
     constructor(
         string memory name,
         string memory symbol,
@@ -74,7 +66,7 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         address _creator,
         address _dexRouterAddress
     ) ERC20(name, symbol) Ownable(_creator) {
-        require(_marketCapThreshold > 0, "Market cap threshold must be greater than 0");
+        require(_marketCapThreshold > 0, "Market cap threshold must be > 0");
         require(_dexRouterAddress != address(0), "Invalid DEX router address");
         require(_creator != address(0), "Invalid creator address");
 
@@ -84,91 +76,86 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         createdAt = block.timestamp;
     }
 
-    // --- Bonding Curve Functions ---
+    // --- Bonding Curve View Functions ---
 
     /**
-     * @dev Returns the current price of one token based on the bonding curve.
-     * @return The current price in wei.
+     * @dev Returns the current price of one token in wei.
      */
     function getCurrentPrice() public view returns (uint256) {
-        return INITIAL_PRICE + (totalSupply() * PRICE_INCREMENT);
+        uint256 scaledPrice = INITIAL_PRICE_SCALED + (totalSupply() * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
+        return scaledPrice;
+    }
+
+    /**
+     * @dev Returns the current market capitalization in wei.
+     */
+    function getMarketCap() public view returns (uint256) {
+        if (totalSupply() == 0) return 0;
+        return (getCurrentPrice() * totalSupply()) / PRICE_PRECISION;
     }
 
     /**
      * @dev Calculates the ETH cost to buy a specified number of tokens.
-     * @param tokenAmount The number of tokens to buy.
-     * @return The cost in wei.
      */
     function getCostToBuy(uint256 tokenAmount) public view returns (uint256) {
-        require(tokenAmount > 0, "Token amount must be greater than 0");
+        require(tokenAmount > 0, "Token amount must be > 0");
         uint256 supply = totalSupply();
-        uint256 startPrice = INITIAL_PRICE + (supply * PRICE_INCREMENT);
-        uint256 endPrice = startPrice + (tokenAmount * PRICE_INCREMENT);
-        return ((startPrice + endPrice) / 2) * tokenAmount / 1 ether;
+        uint256 startPrice = INITIAL_PRICE_SCALED + (supply * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
+        uint256 endPrice = INITIAL_PRICE_SCALED + ((supply + tokenAmount) * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
+
+        return ((startPrice + endPrice) * tokenAmount) / 2 / PRICE_PRECISION;
     }
-    
+
     /**
      * @dev Calculates the ETH proceeds from selling a specified number of tokens.
-     * @param tokenAmount The number of tokens to sell.
-     * @return The proceeds in wei.
      */
     function getProceedsFromSell(uint256 tokenAmount) public view returns (uint256) {
-        require(tokenAmount > 0, "Token amount must be greater than 0");
-        require(totalSupply() >= tokenAmount, "Cannot sell more than total supply");
+        require(tokenAmount > 0, "Token amount must be > 0");
         uint256 supply = totalSupply();
-        uint256 endPrice = INITIAL_PRICE + (supply * PRICE_INCREMENT);
-        uint256 startPrice = endPrice - (tokenAmount * PRICE_INCREMENT);
-        return ((startPrice + endPrice) / 2) * tokenAmount / 1 ether;
+        require(supply >= tokenAmount, "Sell amount exceeds total supply");
+        uint256 startPrice = INITIAL_PRICE_SCALED + ((supply - tokenAmount) * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
+        uint256 endPrice = INITIAL_PRICE_SCALED + (supply * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
+        return ((startPrice + endPrice) * tokenAmount) / 2 / PRICE_PRECISION;
     }
 
     /**
-     * @dev Returns the current market capitalization of the token.
-     * @return The market cap in wei.
+     * @dev Calculates tokens out for a given ETH amount. This is the inverse of getCostToBuy.
      */
-    function getMarketCap() public view returns (uint256) {
-        return getCurrentPrice() * totalSupply() / 1 ether;
+    function calculateTokensForEth(uint256 ethAmount) public view returns (uint256) {
+        require(ethAmount > 0, "ETH amount must be > 0");
+        uint256 supply = totalSupply();
+        uint256 p0 = INITIAL_PRICE_SCALED + (supply * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
+        uint256 b = PRICE_INCREMENT_SCALED;
+
+        uint256 scaledEthAmount = ethAmount * PRICE_PRECISION;
+        uint256 p0_squared = p0 * p0;
+        uint256 term = (2 * scaledEthAmount * b) / PRICE_PRECISION;
+        uint256 discriminant = p0_squared + term;
+        uint256 sqrtDiscriminant = Math.sqrt(discriminant);
+
+        if (sqrtDiscriminant <= p0) {
+            return 0;
+        }
+
+        uint256 numerator = sqrtDiscriminant - p0;
+        return (numerator * PRICE_PRECISION) / b;
     }
 
-    /**
-     * @dev Returns all token details for frontend display.
-     * @return tokenName Token name.
-     * @return tokenSymbol Token symbol.
-     * @return currentPrice Current token price in wei.
-     * @return marketCap Current market cap in wei.
-     * @return liveOnDex Whether trading has moved to the DEX.
-     * @return tokenSupply Total token supply.
-     */
-    function getTokenDetails() external view returns (
-        string memory tokenName,
-        string memory tokenSymbol,
-        uint256 currentPrice,
-        uint256 marketCap,
-        bool liveOnDex,
-        uint256 tokenSupply
-    ) {
-        return (
-            this.name(),
-            this.symbol(),
-            getCurrentPrice(),
-            getMarketCap(),
-            isLiveOnDex,
-            totalSupply()
-        );
-    }
+
+    // --- Core Functions ---
 
     /**
-     * @dev Allows users to buy tokens with ETH based on the bonding curve.
-     * @param minTokensToReceive Minimum tokens to receive (slippage protection).
+     * @dev Allows users to buy tokens with ETH.
      */
     function buy(uint256 minTokensToReceive) external payable nonReentrant {
-        require(!isLiveOnDex, "Trading is now on the DEX");
+        require(!isLiveOnDex, "Trading has moved to the DEX");
         require(msg.value > 0, "Must send ETH to buy");
 
         uint256 tokensToMint = calculateTokensForEth(msg.value);
-        require(tokensToMint >= minTokensToReceive, "Slippage: too few tokens");
+        require(tokensToMint > 0, "ETH amount is too low to buy any tokens");
+        require(tokensToMint >= minTokensToReceive, "Slippage: not enough tokens received");
 
         _mint(msg.sender, tokensToMint);
-
         emit Bought(msg.sender, msg.value, tokensToMint);
 
         if (getMarketCap() >= marketCapThreshold) {
@@ -177,30 +164,29 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Allows users to sell tokens for ETH based on the bonding curve.
-     * @param tokenAmount The number of tokens to sell.
-     * @param minEthToReceive Minimum ETH to receive (slippage protection).
+     * @dev Allows users to sell tokens for ETH.
      */
     function sell(uint256 tokenAmount, uint256 minEthToReceive) external nonReentrant {
-        require(!isLiveOnDex, "Trading is now on the DEX");
-        require(tokenAmount > 0, "Token amount must be greater than 0");
-        require(balanceOf(msg.sender) >= tokenAmount, "Insufficient token balance");
+        require(!isLiveOnDex, "Trading has moved to the DEX");
+        require(tokenAmount > 0, "Token amount must be > 0");
+        uint256 userBalance = balanceOf(msg.sender);
+        require(userBalance >= tokenAmount, "Insufficient token balance");
 
         uint256 proceeds = getProceedsFromSell(tokenAmount);
-        require(proceeds >= minEthToReceive, "Slippage: too little ETH");
+        require(proceeds >= minEthToReceive, "Slippage: not enough ETH received");
+        require(address(this).balance >= proceeds, "Contract has insufficient ETH to pay");
 
         _burn(msg.sender, tokenAmount);
         Address.sendValue(payable(msg.sender), proceeds);
-
         emit Sold(msg.sender, tokenAmount, proceeds);
     }
 
     /**
-     * @dev Allows the owner to recover stuck funds after a 30-day timelock.
+     * @dev Allows the owner to recover stuck funds after a timelock.
      */
     function recoverFunds() external onlyOwner nonReentrant {
-        require(block.timestamp > createdAt + 30 days, "Too early to recover funds");
-        require(!isLiveOnDex, "Already migrated to DEX");
+        require(block.timestamp > createdAt + 30 days, "Timelock not expired");
+        require(!isLiveOnDex, "Cannot recover funds after DEX migration");
 
         uint256 ethBalance = address(this).balance;
         uint256 tokenBalance = balanceOf(address(this));
@@ -215,56 +201,54 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         emit FundsRecovered(owner(), ethBalance, tokenBalance);
     }
 
-    // --- DEX Migration ---
+    /**
+     * @dev Returns all token details for frontend display.
+     */
+    function getTokenDetails()
+        external
+        view
+        returns (
+            string memory tokenName,
+            string memory tokenSymbol,
+            uint256 currentPrice,
+            uint256 marketCap,
+            bool liveOnDex,
+            uint256 tokenSupply
+        )
+    {
+        return (
+            name(),
+            symbol(),
+            getCurrentPrice(),
+            getMarketCap(),
+            isLiveOnDex,
+            totalSupply()
+        );
+    }
+
+    // --- Internal & Fallback Functions ---
 
     /**
-     * @dev Migrates liquidity to the DEX when market cap threshold is reached.
+     * @dev Migrates liquidity to the DEX.
      */
     function _migrateToDex() internal {
         isLiveOnDex = true;
         uint256 ethBalance = address(this).balance;
         uint256 tokenBalance = totalSupply();
+        require(ethBalance > 0 && tokenBalance > 0, "Insufficient balances for migration");
 
-        require(ethBalance > 0 && tokenBalance > 0, "Insufficient balance for migration");
-
-        // Approve DEX router to spend tokens
         _approve(address(this), address(dexRouter), tokenBalance);
 
-        // Add liquidity with 1% slippage tolerance
-        uint256 minTokenAmount = tokenBalance * 99 / 100;
-        uint256 minEthAmount = ethBalance * 99 / 100;
-
-        (uint256 amountToken, uint256 amountETH, ) = dexRouter.addLiquidityETH{value: ethBalance}(
+        dexRouter.addLiquidityETH{value: ethBalance}(
             address(this),
             tokenBalance,
-            minTokenAmount,
-            minEthAmount,
+            0, // amountTokenMin
+            0, // amountETHMin
             creator,
             block.timestamp
         );
 
-        emit MigratedToDex(address(this), amountETH, amountToken);
-    }
-
-    // --- Helper Functions ---
-
-    /**
-     * @dev Calculates the number of tokens that can be bought with a given ETH amount.
-     * @param ethAmount The amount of ETH to spend (in wei).
-     * @return The number of tokens to mint.
-     */
-    function calculateTokensForEth(uint256 ethAmount) public view returns (uint256) {
-        require(ethAmount > 0, "ETH amount must be greater than 0");
-        uint256 scaledEthAmount = ethAmount * 1e18;
-        
-        uint256 a = PRICE_INCREMENT / 2;
-        uint256 b = (INITIAL_PRICE + (totalSupply() * PRICE_INCREMENT)) - a;
-        uint256 c = scaledEthAmount;
-
-        uint256 discriminant = (b * b) + (4 * a * c);
-        uint256 sqrtDiscriminant = Math.sqrt(discriminant);
-
-        return (sqrtDiscriminant - b) / PRICE_INCREMENT;
+        emit MigratedToDex(address(this), ethBalance, tokenBalance);
     }
 
     /**
