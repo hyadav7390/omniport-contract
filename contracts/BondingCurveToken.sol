@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
 // Interface for a standard DEX Router like Uniswap V2
+/*
 interface IDEXRouter {
     function WETH() external pure returns (address);
 
@@ -27,6 +28,7 @@ interface IDEXRouter {
             uint256 liquidity
         );
 }
+*/
 
 /**
  * @title BondingCurveToken
@@ -36,7 +38,7 @@ interface IDEXRouter {
 contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
     // --- State Variables ---
 
-    IDEXRouter public immutable dexRouter;
+    // IDEXRouter public immutable dexRouter; // Commented out for now
     uint256 public immutable marketCapThreshold;
     address public immutable creator;
 
@@ -54,7 +56,6 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
 
     event Bought(address indexed buyer, uint256 ethIn, uint256 tokensOut);
     event Sold(address indexed seller, uint256 tokensIn, uint256 ethOut);
-    event MigratedToDex(address indexed tokenAddress, uint256 ethAmount, uint256 tokenAmount);
     event FundsRecovered(address indexed owner, uint256 ethAmount, uint256 tokenAmount);
 
     // --- Constructor ---
@@ -67,36 +68,29 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         address _dexRouterAddress
     ) ERC20(name, symbol) Ownable(_creator) {
         require(_marketCapThreshold > 0, "Market cap threshold must be > 0");
-        require(_dexRouterAddress != address(0), "Invalid DEX router address");
         require(_creator != address(0), "Invalid creator address");
 
         marketCapThreshold = _marketCapThreshold;
         creator = _creator;
-        dexRouter = IDEXRouter(_dexRouterAddress);
         createdAt = block.timestamp;
+
+        _transferOwnership(_creator);
+
+        // dexRouter = IDEXRouter(_dexRouterAddress); // Commented out
     }
 
     // --- Bonding Curve View Functions ---
 
-    /**
-     * @dev Returns the current price of one token in wei.
-     */
     function getCurrentPrice() public view returns (uint256) {
         uint256 scaledPrice = INITIAL_PRICE_SCALED + (totalSupply() * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
         return scaledPrice;
     }
 
-    /**
-     * @dev Returns the current market capitalization in wei.
-     */
     function getMarketCap() public view returns (uint256) {
         if (totalSupply() == 0) return 0;
         return (getCurrentPrice() * totalSupply()) / PRICE_PRECISION;
     }
 
-    /**
-     * @dev Calculates the ETH cost to buy a specified number of tokens.
-     */
     function getCostToBuy(uint256 tokenAmount) public view returns (uint256) {
         require(tokenAmount > 0, "Token amount must be > 0");
         uint256 supply = totalSupply();
@@ -106,9 +100,6 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         return ((startPrice + endPrice) * tokenAmount) / 2 / PRICE_PRECISION;
     }
 
-    /**
-     * @dev Calculates the ETH proceeds from selling a specified number of tokens.
-     */
     function getProceedsFromSell(uint256 tokenAmount) public view returns (uint256) {
         require(tokenAmount > 0, "Token amount must be > 0");
         uint256 supply = totalSupply();
@@ -118,9 +109,6 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         return ((startPrice + endPrice) * tokenAmount) / 2 / PRICE_PRECISION;
     }
 
-    /**
-     * @dev Calculates tokens out for a given ETH amount. This is the inverse of getCostToBuy.
-     */
     function calculateTokensForEth(uint256 ethAmount) public view returns (uint256) {
         require(ethAmount > 0, "ETH amount must be > 0");
         uint256 supply = totalSupply();
@@ -141,12 +129,8 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         return (numerator * PRICE_PRECISION) / b;
     }
 
-
     // --- Core Functions ---
 
-    /**
-     * @dev Allows users to buy tokens with ETH.
-     */
     function buy(uint256 minTokensToReceive) external payable nonReentrant {
         require(!isLiveOnDex, "Trading has moved to the DEX");
         require(msg.value > 0, "Must send ETH to buy");
@@ -163,9 +147,6 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         }
     }
 
-    /**
-     * @dev Allows users to sell tokens for ETH.
-     */
     function sell(uint256 tokenAmount, uint256 minEthToReceive) external nonReentrant {
         require(!isLiveOnDex, "Trading has moved to the DEX");
         require(tokenAmount > 0, "Token amount must be > 0");
@@ -181,9 +162,6 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         emit Sold(msg.sender, tokenAmount, proceeds);
     }
 
-    /**
-     * @dev Allows the owner to recover stuck funds after a timelock.
-     */
     function recoverFunds() external onlyOwner nonReentrant {
         require(block.timestamp > createdAt + 30 days, "Timelock not expired");
         require(!isLiveOnDex, "Cannot recover funds after DEX migration");
@@ -201,9 +179,6 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         emit FundsRecovered(owner(), ethBalance, tokenBalance);
     }
 
-    /**
-     * @dev Returns all token details for frontend display.
-     */
     function getTokenDetails()
         external
         view
@@ -228,31 +203,26 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
 
     // --- Internal & Fallback Functions ---
 
-    /**
-     * @dev Migrates liquidity to the DEX.
-     */
     function _migrateToDex() internal {
         isLiveOnDex = true;
-        uint256 ethBalance = address(this).balance;
-        uint256 tokenBalance = totalSupply();
-        require(ethBalance > 0 && tokenBalance > 0, "Insufficient balances for migration");
+        // Migration logic has been disabled for now
+        // uint256 ethBalance = address(this).balance;
+        // uint256 tokenBalance = totalSupply();
+        // require(ethBalance > 0 && tokenBalance > 0, "Insufficient balances for migration");
 
-        _approve(address(this), address(dexRouter), tokenBalance);
+        // _approve(address(this), address(dexRouter), tokenBalance);
 
-        dexRouter.addLiquidityETH{value: ethBalance}(
-            address(this),
-            tokenBalance,
-            0, // amountTokenMin
-            0, // amountETHMin
-            creator,
-            block.timestamp
-        );
+        // dexRouter.addLiquidityETH{value: ethBalance}(
+        //     address(this),
+        //     tokenBalance,
+        //     0, // amountTokenMin
+        //     0, // amountETHMin
+        //     creator,
+        //     block.timestamp
+        // );
 
-        emit MigratedToDex(address(this), ethBalance, tokenBalance);
+        // emit MigratedToDex(address(this), ethBalance, tokenBalance);
     }
 
-    /**
-     * @dev Fallback function to receive ETH.
-     */
     receive() external payable {}
 }
