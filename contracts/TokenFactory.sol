@@ -5,15 +5,8 @@ import "./BondingCurveToken.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 
-/**
- * @title TokenFactory
- * @dev Deploys BondingCurveToken contracts and maintains a registry with metadata.
- * Optimized for gas efficiency and scalability with pagination support.
- */
 contract TokenFactory is Ownable {
     // --- State Variables ---
-
-    // Struct to store token metadata
     struct TokenInfo {
         address tokenAddress;
         string name;
@@ -23,7 +16,6 @@ contract TokenFactory is Ownable {
         address creator;
     }
 
-    // Struct for paginated token details
     struct TokenDetails {
         address tokenAddress;
         string name;
@@ -35,34 +27,22 @@ contract TokenFactory is Ownable {
         uint256 marketCap;
         bool isLiveOnDex;
         uint256 totalSupply;
+        uint256 holders;
+        uint256 createdAt;
     }
 
-    // Array of all tokens created
     TokenInfo[] public allTokens;
-
-    // Creation fee in wei
     uint256 public creationFee = 0 ether;
-
-    // DEX router address
     address public dexRouterAddress;
-
-    // Fee wallet address
     address payable public feeWallet;
 
     // --- Events ---
-
     event TokenCreated(address indexed tokenAddress, address indexed creator, uint256 marketCapThreshold);
     event CreationFeeUpdated(uint256 newFee);
     event FeeWalletUpdated(address newFeeWallet);
     event DexRouterUpdated(address newDexRouter);
 
     // --- Constructor ---
-
-    /**
-     * @dev Initializes the factory with a DEX router and fee wallet.
-     * @param _dexRouterAddress DEX router address.
-     * @param _feeWallet Fee recipient address.
-     */
     constructor(address _dexRouterAddress, address payable _feeWallet) Ownable(msg.sender) {
         require(_dexRouterAddress != address(0), "Invalid DEX router");
         require(_feeWallet != address(0), "Invalid fee wallet");
@@ -71,15 +51,6 @@ contract TokenFactory is Ownable {
     }
 
     // --- Core Functions ---
-
-    /**
-     * @dev Creates a new BondingCurveToken with metadata.
-     * @param name Token name.
-     * @param symbol Token symbol.
-     * @param logoURI Token logo URI.
-     * @param marketCapThreshold Market cap threshold in wei.
-     * @return Address of the new token.
-     */
     function createToken(
         string calldata name,
         string calldata symbol,
@@ -117,29 +88,17 @@ contract TokenFactory is Ownable {
         return tokenAddress;
     }
 
-    /**
-     * @dev Updates the creation fee.
-     * @param newFee New fee in wei.
-     */
     function updateCreationFee(uint256 newFee) external onlyOwner {
         creationFee = newFee;
         emit CreationFeeUpdated(newFee);
     }
 
-    /**
-     * @dev Updates the fee wallet.
-     * @param newFeeWallet New fee wallet address.
-     */
     function updateFeeWallet(address payable newFeeWallet) external onlyOwner {
         require(newFeeWallet != address(0), "Invalid fee wallet");
         feeWallet = newFeeWallet;
         emit FeeWalletUpdated(newFeeWallet);
     }
 
-    /**
-     * @dev Updates the DEX router.
-     * @param newDexRouter New DEX router address.
-     */
     function updateDexRouter(address newDexRouter) external onlyOwner {
         require(newDexRouter != address(0), "Invalid DEX router");
         dexRouterAddress = newDexRouter;
@@ -147,25 +106,14 @@ contract TokenFactory is Ownable {
     }
 
     // --- View Functions ---
-
-    /**
-     * @dev Returns the total number of tokens created.
-     * @return Number of tokens.
-     */
     function getTokenCount() external view returns (uint256) {
         return allTokens.length;
     }
 
-    /**
-     * @dev Returns a paginated list of token details.
-     * @param offset Starting index.
-     * @param limit Number of tokens to return.
-     * @return details Array of TokenDetails structs.
-     */
-    function getPaginatedTokens(uint256 offset, uint256 limit) 
-        external 
-        view 
-        returns (TokenDetails[] memory details) 
+    function getPaginatedTokens(uint256 offset, uint256 limit)
+    external
+    view
+    returns (TokenDetails[] memory details)
     {
         uint256 count = allTokens.length;
         if (offset >= count || limit == 0) {
@@ -175,29 +123,32 @@ contract TokenFactory is Ownable {
         uint256 size = offset + limit > count ? count - offset : limit;
         details = new TokenDetails[](size);
 
-        for (uint256 i = 0; i < size; ) {
+        for (uint256 i = 0; i < size;) {
             TokenInfo storage token = allTokens[offset + i];
             BondingCurveToken tokenContract = BondingCurveToken(payable(token.tokenAddress));
             (
-                , // Skip tokenName
-                , // Skip tokenSymbol
+                string memory tokenName,
+                string memory tokenSymbol,
                 uint256 price,
                 uint256 marketCap,
                 bool liveOnDex,
-                uint256 supply
+                uint256 supply,
+                uint256 holders
             ) = tokenContract.getTokenDetails();
 
             details[i] = TokenDetails({
                 tokenAddress: token.tokenAddress,
-                name: token.name,
-                symbol: token.symbol,
+                name: tokenName,
+                symbol: tokenSymbol,
                 logoURI: token.logoURI,
                 marketCapThreshold: token.marketCapThreshold,
                 creator: token.creator,
                 currentPrice: price,
                 marketCap: marketCap,
                 isLiveOnDex: liveOnDex,
-                totalSupply: supply
+                totalSupply: supply,
+                holders: holders,
+                createdAt: tokenContract.getCreatedAt()
             });
 
             unchecked { ++i; }

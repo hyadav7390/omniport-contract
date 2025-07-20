@@ -7,59 +7,28 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
-// Interface for a standard DEX Router like Uniswap V2
-/*
-interface IDEXRouter {
-    function WETH() external pure returns (address);
-
-    function addLiquidityETH(
-        address token,
-        uint256 amountTokenDesired,
-        uint256 amountTokenMin,
-        uint256 amountETHMin,
-        address to,
-        uint256 deadline
-    )
-        external
-        payable
-        returns (
-            uint256 amountToken,
-            uint256 amountETH,
-            uint256 liquidity
-        );
-}
-*/
-
-/**
- * @title BondingCurveToken
- * @dev An ERC20 token with a linear bonding curve for pricing.
- * This version includes robust mathematical handling to prevent overflows.
- */
 contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
     // --- State Variables ---
-
-    // IDEXRouter public immutable dexRouter; // Commented out for now
     uint256 public immutable marketCapThreshold;
     address public immutable creator;
-
-    // Using a scaling factor for all price calculations to maintain precision.
-    uint256 private constant PRICE_PRECISION = 1e18;
-
-    // Prices are now scaled up to avoid floating-point math.
-    uint256 public constant INITIAL_PRICE_SCALED = 1e11; // 0.0000001 * 1e18
-    uint256 public constant PRICE_INCREMENT_SCALED = 1e9;  // 0.000000001 * 1e18
-
-    bool public isLiveOnDex = false;
     uint256 public immutable createdAt;
 
-    // --- Events ---
+    uint256 private constant PRICE_PRECISION = 1e18;
+    uint256 public constant INITIAL_PRICE_SCALED = 1e11;
+    uint256 public constant PRICE_INCREMENT_SCALED = 1e9;
 
+    bool public isLiveOnDex = false;
+
+    // Holder tracking
+    mapping(address => bool) public isHolder;
+    uint256 public holderCount;
+
+    // --- Events ---
     event Bought(address indexed buyer, uint256 ethIn, uint256 tokensOut);
     event Sold(address indexed seller, uint256 tokensIn, uint256 ethOut);
     event FundsRecovered(address indexed owner, uint256 ethAmount, uint256 tokenAmount);
 
     // --- Constructor ---
-
     constructor(
         string memory name,
         string memory symbol,
@@ -75,12 +44,14 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         createdAt = block.timestamp;
 
         _transferOwnership(_creator);
+    }
 
-        // dexRouter = IDEXRouter(_dexRouterAddress); // Commented out
+    // Function to get the createdAt value
+    function getCreatedAt() public view returns (uint256) {
+        return createdAt;
     }
 
     // --- Bonding Curve View Functions ---
-
     function getCurrentPrice() public view returns (uint256) {
         uint256 scaledPrice = INITIAL_PRICE_SCALED + (totalSupply() * PRICE_INCREMENT_SCALED) / PRICE_PRECISION;
         return scaledPrice;
@@ -130,7 +101,6 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
     }
 
     // --- Core Functions ---
-
     function buy(uint256 minTokensToReceive) external payable nonReentrant {
         require(!isLiveOnDex, "Trading has moved to the DEX");
         require(msg.value > 0, "Must send ETH to buy");
@@ -188,7 +158,8 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
             uint256 currentPrice,
             uint256 marketCap,
             bool liveOnDex,
-            uint256 tokenSupply
+            uint256 tokenSupply,
+            uint256 holders
         )
     {
         return (
@@ -197,31 +168,25 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
             getCurrentPrice(),
             getMarketCap(),
             isLiveOnDex,
-            totalSupply()
+            totalSupply(),
+            holderCount
         );
     }
 
-    // --- Internal & Fallback Functions ---
+    function _afterTokenTransfer(address from, address to, uint256) internal virtual {
+        if (from != address(0) && balanceOf(from) == 0 && isHolder[from]) {
+            isHolder[from] = false;
+            holderCount--;
+        }
+
+        if (to != address(0) && !isHolder[to] && balanceOf(to) > 0) {
+            isHolder[to] = true;
+            holderCount++;
+        }
+    }
 
     function _migrateToDex() internal {
         isLiveOnDex = true;
-        // Migration logic has been disabled for now
-        // uint256 ethBalance = address(this).balance;
-        // uint256 tokenBalance = totalSupply();
-        // require(ethBalance > 0 && tokenBalance > 0, "Insufficient balances for migration");
-
-        // _approve(address(this), address(dexRouter), tokenBalance);
-
-        // dexRouter.addLiquidityETH{value: ethBalance}(
-        //     address(this),
-        //     tokenBalance,
-        //     0, // amountTokenMin
-        //     0, // amountETHMin
-        //     creator,
-        //     block.timestamp
-        // );
-
-        // emit MigratedToDex(address(this), ethBalance, tokenBalance);
     }
 
     receive() external payable {}
