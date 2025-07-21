@@ -123,7 +123,7 @@ contract TokenFactory is Ownable {
         uint256 size = offset + limit > count ? count - offset : limit;
         details = new TokenDetails[](size);
 
-        for (uint256 i = 0; i < size;) {
+        for (uint256 i = 0; i < size; i++) {
             TokenInfo storage token = allTokens[offset + i];
             BondingCurveToken tokenContract = BondingCurveToken(payable(token.tokenAddress));
             (
@@ -150,10 +150,18 @@ contract TokenFactory is Ownable {
                 holders: holders,
                 createdAt: tokenContract.getCreatedAt()
             });
-
-            unchecked { ++i; }
         }
 
         return details;
+    }
+
+    // Function to get the logo URI for a given token address
+    function getLogoURI(address tokenAddress) external view returns (string memory) {
+        for (uint256 i = 0; i < allTokens.length; i++) {
+            if (allTokens[i].tokenAddress == tokenAddress) {
+                return allTokens[i].logoURI;
+            }
+        }
+        return "";
     }
 }

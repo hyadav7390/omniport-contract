@@ -173,13 +173,13 @@ contract BondingCurveToken is ERC20, Ownable, ReentrancyGuard {
         );
     }
 
-    function _afterTokenTransfer(address from, address to, uint256) internal virtual {
+    function _afterTokenTransfer(address from, address to) internal virtual {
         if (from != address(0) && balanceOf(from) == 0 && isHolder[from]) {
             isHolder[from] = false;
             holderCount--;
         }
 
-        if (to != address(0) && !isHolder[to] && balanceOf(to) > 0) {
+        if (to != address(0) && balanceOf(to) > 0 && !isHolder[to]) {
             isHolder[to] = true;
             holderCount++;
         }
